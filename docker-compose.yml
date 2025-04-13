@@ -1,0 +1,11 @@
+version: '3.8'
+services:
+  app:
+    build: .
+    tty: true
+    init: true
+    volumes:
+      - ./.aws:/home/node/.aws
+      - .:/app
+    env_file:
+      - .env

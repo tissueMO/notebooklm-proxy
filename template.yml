@@ -1,0 +1,64 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+  ApiKey:
+    Type: String
+  NotebookUrl:
+    Type: String
+  ScreenshotBucket:
+    Type: String
+  GoogleUserName:
+    Type: String
+  GoogleUserPassword:
+    Type: String
+  SlackWebhookUrl:
+    Type: String
+
+Resources:
+  PlaywrightLayer:
+    Type: AWS::Serverless::LayerVersion
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      ContentUri: layer/
+      Description: 'Common Layer for Playwright'
+      CompatibleRuntimes:
+        - nodejs16.x
+
+  NotebookLMProxyLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: NotebookLMProxy
+      Handler: index.execute
+      Runtime: nodejs16.x
+      CodeUri: src/
+      Timeout: 30
+      MemorySize: 1024
+      Layers:
+        - !Ref PlaywrightLayer
+      RuntimeManagementConfig:
+        UpdateRuntimeOn: Manual
+        RuntimeVersionArn: arn:aws:lambda:ap-northeast-1::runtime:0163909785ec2e11db2b64bb2636ada67bb348dd5764aa83e7eb011bc0f365d8
+      Environment:
+        Variables:
+          API_KEY: !Ref ApiKey
+          NOTEBOOK_URL: !Ref NotebookUrl
+          SCREENSHOT_BUCKET: !Ref ScreenshotBucket
+          GOOGLE_USER_NAME: !Ref GoogleUserName
+          GOOGLE_USER_PASSWORD: !Ref GoogleUserPassword
+          SLACK_WEBHOOK_URL: !Ref SlackWebhookUrl
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: '*'
+        - S3CrudPolicy:
+            BucketName: my-temporary
+      FunctionUrlConfig:
+        AuthType: NONE
+        Cors:
+          AllowOrigins:
+            - '*'
+          AllowMethods:
+            - 'POST'
+          AllowHeaders:
+            - '*'
