@@ -50,12 +50,6 @@ docker-compose up -d
 yarn deploy
 ```
 
-または
-
-```bash
-bash ./deploy.sh
-```
-
 ## 使用方法
 
 ### API 経由での利用

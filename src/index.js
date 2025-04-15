@@ -56,22 +56,9 @@ exports.execute = async (event, context) => {
           continue;
         }
 
-        // ※レスポンスを整形
-        return responseMessage
-          .split('\n')
-          .map((line) => line.trim())
-          .filter((line) => !['keep_pin', 'メモに保存', 'copy_all', 'thumb_up', 'thumb_down'].includes(line))
-          .reduce((acc, line) => {
-            if (/^[◦•▪]/.test(line)) {
-              return [...acc, line];
-            } else if (acc.length > 0) {
-              acc[acc.length - 1] += line;
-              return acc;
-            } else {
-              return [...acc, line];
-            }
-          }, [])
-          .join('\n');
+        // コピーボタンで整形済みMarkdownを取得
+        await page.click('chat-message:nth-child(2) button[aria-label$="コピー"]');
+        return await page.evaluate(() => navigator.clipboard.readText());
       }
 
       return '(Timeout)';
@@ -90,6 +77,7 @@ exports.execute = async (event, context) => {
         {
           title: 'NotebookLMからの回答',
           text: result,
+          mrkdwn_in: ['text'],
         },
       ],
     });
@@ -132,6 +120,7 @@ const executeOnNotebookLM = async (notebookUrl, callback) => {
   const context = await browser.newContext({
     locale: 'ja',
     viewport: { width: 1920, height: 1080 },
+    permissions: ['clipboard-read', 'clipboard-write'],
     ...(hasPreviousContext ? { storageState: '/tmp/chromium-contexts.json' } : {}),
   });
 
@@ -200,7 +189,7 @@ const executeOnNotebookLM = async (notebookUrl, callback) => {
  * @returns {boolean}
  */
 const isSlackBot = event => {
-  return event.requestContext.http.userAgent.startsWith('Slackbot');
+  return event.requestContext?.http?.userAgent?.startsWith('Slackbot') ?? false;
 };
 
 /**
