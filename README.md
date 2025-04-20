@@ -28,14 +28,13 @@ API リクエストや Slack からのメッセージを受け取り、NotebookL
 以下の環境変数を `.env` ファイルに設定する必要があります：
 
 ```
-S3_BUCKET=デプロイ用の S3 バケット名
-S3_PREFIX=デプロイ用の S3 プレフィックス
+S3_BUCKET=S3 バケット名
 NOTEBOOK_URL=NotebookLM の URL
-SCREENSHOT_BUCKET=スクリーンショット保存用の S3 バケット
 API_KEY=API 認証キー
 GOOGLE_USER_NAME=Google アカウントのユーザー名
 GOOGLE_USER_PASSWORD=Google アカウントのパスワード
 SLACK_WEBHOOK_URL=Slack の Webhook URL
+SQS_QUEUE_URL=SQS キュー URL
 ```
 
 ### 開発環境の構築

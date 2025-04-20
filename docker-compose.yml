@@ -1,6 +1,17 @@
 version: '3.8'
 services:
-  app:
+  worker:
+    build:
+      context: worker
+      target: dev
+    tty: true
+    init: true
+    volumes:
+      - ./.aws:/root/.aws
+      - ./worker:/app
+    env_file:
+      - .env
+  deploy:
     build: .
     tty: true
     init: true

@@ -1,21 +1,24 @@
 {
-  "name": "notebooklm-proxy",
+  "name": "notebooklm-proxy-worker",
   "version": "1.0.0",
   "author": "tissueMO",
   "license": "UNLICENSED",
   "type": "module",
   "private": true,
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.787.0",
+    "@aws-sdk/client-sqs": "^3.787.0",
     "axios": "^1.8.4",
-    "playwright-aws-lambda": "^0.11.0",
-    "playwright-core": "^1.51.1"
+    "cron": "^4.3.0",
+    "playwright": "^1.52.0",
+    "sqs-consumer": "^11.6.0"
   },
   "devDependencies": {
     "@babel/eslint-parser": "^7.18.9",
     "eslint": "^8.20.0"
   },
   "scripts": {
-    "deploy": "bash ./deploy.sh",
+    "start": "AWS_SDK_LOAD_CONFIG=1 node index.mjs",
     "lint": "eslint src"
   }
 }

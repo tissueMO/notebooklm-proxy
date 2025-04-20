@@ -2,57 +2,39 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 
 Parameters:
+  S3Bucket:
+    Type: String
   ApiKey:
-    Type: String
-  NotebookUrl:
-    Type: String
-  ScreenshotBucket:
-    Type: String
-  GoogleUserName:
-    Type: String
-  GoogleUserPassword:
     Type: String
   SlackWebhookUrl:
     Type: String
+  ECSInstanceAMI:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id
 
 Resources:
-  PlaywrightLayer:
-    Type: AWS::Serverless::LayerVersion
-    Metadata:
-      BuildMethod: makefile
-    Properties:
-      ContentUri: layer/
-      Description: 'Common Layer for Playwright'
-      CompatibleRuntimes:
-        - nodejs16.x
-
+  # Lambda関数
   NotebookLMProxyLambdaFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: NotebookLMProxy
-      Handler: index.execute
-      Runtime: nodejs16.x
-      CodeUri: src/
-      Timeout: 30
-      MemorySize: 1024
+      Handler: index.handler
+      Runtime: nodejs22.x
+      CodeUri: lambda/
       Layers:
-        - !Ref PlaywrightLayer
-      RuntimeManagementConfig:
-        UpdateRuntimeOn: Manual
-        RuntimeVersionArn: arn:aws:lambda:ap-northeast-1::runtime:0163909785ec2e11db2b64bb2636ada67bb348dd5764aa83e7eb011bc0f365d8
+        - !Ref NotebookLMProxyLambdaLayer
       Environment:
         Variables:
           API_KEY: !Ref ApiKey
-          NOTEBOOK_URL: !Ref NotebookUrl
-          SCREENSHOT_BUCKET: !Ref ScreenshotBucket
-          GOOGLE_USER_NAME: !Ref GoogleUserName
-          GOOGLE_USER_PASSWORD: !Ref GoogleUserPassword
           SLACK_WEBHOOK_URL: !Ref SlackWebhookUrl
+          SQS_QUEUE_URL: !Ref ProcessQueue
       Policies:
         - LambdaInvokePolicy:
             FunctionName: '*'
         - S3CrudPolicy:
             BucketName: my-temporary
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ProcessQueue.QueueName
       FunctionUrlConfig:
         AuthType: NONE
         Cors:
@@ -62,3 +44,256 @@ Resources:
             - 'POST'
           AllowHeaders:
             - '*'
+
+  # Lambdaレイヤー
+  NotebookLMProxyLambdaLayer:
+    Type: AWS::Serverless::LayerVersion
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      ContentUri: lambda-layer/
+      Description: 'node_modules for NotebookLM'
+      CompatibleRuntimes:
+        - nodejs22.x
+
+  # SQSキュー
+  ProcessQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: notebooklm-proxy.fifo
+      FifoQueue: true
+      Tags:
+        - Key: Name
+          Value: notebooklm-proxy
+
+  # ネットワーク定義
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: '172.16.0.0/16'
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: notebooklm
+
+  SubnetPublic1a:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Sub ${AWS::Region}a
+      CidrBlock: '172.16.1.0/26'
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: notebooklm-public-1a
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+      - Key: Name
+        Value: notebooklm
+  AttachInternetGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: notebooklm-public
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  SubnetPublic1aRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SubnetPublic1a
+      RouteTableId: !Ref PublicRouteTable
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: NotebookLM Proxy Worker
+      Tags:
+        - Key: Name
+          Value: notebooklm-worker
+
+  # 仮想マシン定義
+  ECSInstanceAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AvailabilityZones:
+        - !GetAtt SubnetPublic1a.AvailabilityZone
+      LaunchTemplate:
+        LaunchTemplateId: !GetAtt ECSInstanceLaunchTemplate.LaunchTemplateId
+        Version: !GetAtt ECSInstanceLaunchTemplate.LatestVersionNumber
+      MinSize: '1'
+      MaxSize: '1'
+      Tags:
+        - Key: Name
+          Value: notebooklm
+          PropagateAtLaunch: true
+  ECSInstanceLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    DependsOn: ECSCluster
+    Properties:
+      LaunchTemplateData:
+        ImageId: !Ref ECSInstanceAMI
+        InstanceType: t3.small
+        IamInstanceProfile:
+          Arn: !GetAtt ECSInstanceProfile.Arn
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            NetworkInterfaceId: !Ref ECSInstanceNetworkInterface
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeType: gp2
+              VolumeSize: '30'
+        UserData:
+          # ECSクラスターで利用可能なインスタンスとして登録
+          Fn::Base64: !Sub |
+            #!/bin/bash -xe
+            echo ECS_CLUSTER=${ECSCluster} >> /etc/ecs/ecs.config
+        TagSpecifications:
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: notebooklm
+  ECSInstanceNetworkInterface:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref SubnetPublic1a
+      GroupSet:
+        - !Ref SecurityGroup
+
+  # コンテナーサービス定義
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterSettings:
+        - Name: containerInsights
+          Value: disabled
+      Tags:
+        - Key: Name
+          Value: notebooklm
+
+  ECRWorkerRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: notebooklm/worker
+
+  ECSWorkerTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: notebooklm-worker
+      NetworkMode: bridge
+      ExecutionRoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/ecsTaskExecutionRole
+      Memory: '1536'
+      ContainerDefinitions:
+        - Name: app
+          Image: !Join [':', [!GetAtt ECRWorkerRepository.RepositoryUri, latest]]
+          Cpu: '0'
+          Essential: 'true'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: /ecs/notebooklm/worker
+              awslogs-region: !Sub ${AWS::Region}
+              awslogs-stream-prefix: ecs
+              awslogs-create-group: 'true'
+          Environment:
+            - Name: TZ
+              Value: Asia/Tokyo
+            - Name: S3_BUCKET
+              Value: !Ref S3Bucket
+          Secrets:
+            - Name: NOTEBOOK_URL
+              ValueFrom: /notebooklm/notebook-url
+            - Name: GOOGLE_USER_NAME
+              ValueFrom: /notebooklm/user/username
+            - Name: GOOGLE_USER_PASSWORD
+              ValueFrom: /notebooklm/user/password
+            - Name: SLACK_WEBHOOK_URL
+              ValueFrom: /notebooklm/slack/webhook-url
+      Tags:
+        - Key: Name
+          Value: notebooklm-worker
+
+  ECSWorkerService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref ECSWorkerTaskDefinition
+      LaunchType: EC2
+      DesiredCount: 1
+      LoadBalancers: []
+      SchedulingStrategy: REPLICA
+      DeploymentConfiguration:
+        MaximumPercent: '200'
+        MinimumHealthyPercent: '0'
+      Tags:
+        - Key: Name
+          Value: notebooklm-worker
+
+  # IAM定義
+  ECSInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AmazonSQSFullAccess
+      Policies:
+        - PolicyName: ecs-service
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action:
+                - 'ecs:CreateCluster'
+                - 'ecs:DeregisterContainerInstance'
+                - 'ecs:DiscoverPollEndpoint'
+                - 'ecs:Poll'
+                - 'ecs:RegisterContainerInstance'
+                - 'ecs:StartTelemetrySession'
+                - 'ecs:Submit*'
+                - 'logs:CreateLogStream'
+                - 'logs:PutLogEvents'
+              Resource: '*'
+  ECSInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: '/'
+      Roles:
+        - !Ref ECSInstanceRole
+
+Outputs:
+  NotebookLMProxyFunctionUrl:
+    Description: 'NotebookLM Proxy Function URL'
+    Value: !GetAtt NotebookLMProxyLambdaFunctionUrl.FunctionUrl
+  ECRWorkerRepositoryUri:
+    Description: 'ECR Worker Repository URI'
+    Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRWorkerRepository}
+  SQSQueueUrl:
+    Description: 'SQS Queue URL'
+    Value: !Ref ProcessQueue
