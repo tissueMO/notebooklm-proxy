@@ -7,6 +7,8 @@ import { SQSClient } from '@aws-sdk/client-sqs';
 import { CronJob } from 'cron';
 import path from 'path';
 
+console.info(`Version: ${process.env.npm_package_version}`);
+
 const THREAD_TIMEOUT = 12 * 60 * 60 * 1000;
 const s3Client = new S3Client();
 
@@ -63,7 +65,7 @@ async function initialize(browser) {
     const { Body: previousContextData } = await s3Client.send(
       new GetObjectCommand({
         Bucket: process.env.S3_BUCKET,
-        Key: 'chromium-contexts.json',
+        Key: `${process.env.NODE_ENV}/contexts/chromium.json`,
       }),
     );
 
@@ -86,7 +88,7 @@ async function initialize(browser) {
     await page.goto(process.env.NOTEBOOK_URL);
     await page.waitForLoadState('domcontentloaded');
 
-    const needsLogin = await page.$('input[type="email"]').then((element) => !!element);
+    const needsLogin = page.url() !== process.env.NOTEBOOK_URL;
 
     if (needsLogin) {
       // メールアドレス入力
@@ -114,31 +116,34 @@ async function initialize(browser) {
           }
         }
       });
+      await page.waitForLoadState('domcontentloaded');
 
       // ※手動で多要素認証を通す
       console.log('Chromium: 本人確認を実施します...');
-      const authS3Uri = await screenshot(page, 'screenshot/auth');
+      const authS3Uri = await screenshot(page, `${process.env.NODE_ENV}/screenshot/auth`);
       await axios.post(process.env.SLACK_WEBHOOK_URL, {
-        text: `本人確認が発生しました。60秒以内に対応してください。\n${authS3Uri}`,
+        text: `本人確認が発生しました。120秒以内に対応してください。\n${authS3Uri}`,
       });
 
-      // TODO: 本人確認の成否を確認する
-      await page.waitForTimeout(60 * 1000);
-      console.log('Chromium: 本人確認タイムアウト');
+      // 本人確認が完了するまで待つ
+      await page.waitForURL(process.env.NOTEBOOK_URL, { timeout: 120 * 1000 });
+      await page.waitForLoadState('domcontentloaded');
+      console.log('Chromium: 本人確認完了');
 
       // 認証後の状態を保存
       await page.context().storageState({ path: '/tmp/chromium-contexts.json' });
       await s3Client.send(
         new PutObjectCommand({
           Bucket: process.env.S3_BUCKET,
-          Key: 'chromium-contexts.json',
+          Key: `${process.env.NODE_ENV}/contexts/chromium.json`,
           Body: await fs.readFile('/tmp/chromium-contexts.json'),
         }),
       );
     }
 
   } finally {
-    await screenshot(page, 'screenshot/initialized')
+    await page.waitForLoadState('domcontentloaded');
+    await screenshot(page, `${process.env.NODE_ENV}/screenshot/initialized`);
     await page.close();
   }
 
@@ -207,9 +212,8 @@ async function handler(payload) {
 
   // NotebookLM 問合せ実行
   const page = await openNotebook(context, threadTimestamp);
-  await screenshot(page, `screenshot/finally-${threadTimestamp}`);
   const response = await queryNotebook(page, data.message);
-  await screenshot(page, `screenshot/finally-${threadTimestamp}`);
+  await screenshot(page, `${process.env.NODE_ENV}/screenshot/finally-${threadTimestamp}`);
 
   // メンション元スレッドに返信
   await axios.post(process.env.SLACK_WEBHOOK_URL, {

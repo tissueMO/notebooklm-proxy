@@ -213,10 +213,16 @@ Resources:
               awslogs-stream-prefix: ecs
               awslogs-create-group: 'true'
           Environment:
+            - Name: AWS_REGION
+              Value: ap-northeast-1
+            - Name: AWS_DEFAULT_REGION
+              Value: ap-northeast-1
             - Name: TZ
               Value: Asia/Tokyo
             - Name: S3_BUCKET
               Value: !Ref S3Bucket
+            - Name: SQS_QUEUE_URL
+              Value: !Ref ProcessQueue
           Secrets:
             - Name: NOTEBOOK_URL
               ValueFrom: /notebooklm/notebook-url

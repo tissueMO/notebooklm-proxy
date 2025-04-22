@@ -27,24 +27,26 @@ export async function handler(event) {
     case 'event_callback':
       console.log('Slackbot: イベント通知内容', data);
 
-      // SQSキューイング
-      await sqsClient.send(new SendMessageCommand({
-        QueueUrl: process.env.SQS_QUEUE_URL,
-        MessageGroupId: 'slackbot-default',
-        MessageDeduplicationId: data.event.ts,
-        MessageBody: JSON.stringify({
-          slack: data.event,
-          message: data.event.text
-            .replace(/^<@[^>]+>/g, '')
-            .trim(),
+      await Promise.all([
+        // 元スレッドに受理した旨を返信
+        axios.post(process.env.SLACK_WEBHOOK_URL, {
+          thread_ts: data.event.ts,
+          text: '(NotebookLMに問い合わせ中...)',
         }),
-      }));
 
-      // 元スレッドに受理した旨を返信
-      await axios.post(process.env.SLACK_WEBHOOK_URL, {
-        thread_ts: data.event.ts,
-        text: '(NotebookLMに問い合わせ中...)',
-      });
+        // SQSキューイング
+        sqsClient.send(new SendMessageCommand({
+          QueueUrl: process.env.SQS_QUEUE_URL,
+          MessageGroupId: 'slackbot-default',
+          MessageDeduplicationId: data.event.ts,
+          MessageBody: JSON.stringify({
+            slack: data.event,
+            message: data.event.text
+              .replace(/^<@[^>]+>/g, '')
+              .trim(),
+          }),
+        })),
+      ])
 
       return { statusCode: 200 };
   }

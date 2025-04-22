@@ -9,6 +9,8 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+ENV NODE_ENV=development
+
 WORKDIR /app
 CMD ["bash"]
 

@@ -18,7 +18,8 @@
     "eslint": "^8.20.0"
   },
   "scripts": {
-    "start": "AWS_SDK_LOAD_CONFIG=1 node index.mjs",
+    "dev": "AWS_SDK_LOAD_CONFIG=1 node index.mjs",
+    "start": "node index.mjs",
     "lint": "eslint src"
   }
 }
